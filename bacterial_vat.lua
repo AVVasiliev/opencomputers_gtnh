@@ -1,4 +1,7 @@
-function get_gt_by_name(component, name)
+local component = require("component")
+local sides = require("sides")
+
+function get_gt_by_name(name)
   for k, _ in component.list("gt_machine") do
     gt = component.proxy(k)
 	if string.find(gt.getName(), name) ~= nil then
@@ -7,31 +10,45 @@ function get_gt_by_name(component, name)
   end
 end
 
-local comp = require("component")
-local red = comp.redstone
-local si = require("sides")
-red.setOutput(si.top, 0)
-
+function try(f, catch_f)
+	local status, exception = pcall(f)
+	if status == false then
+	    os.sleep(3)
+		catch_f(exception)
+	end
+end
 
 VatController = {}
 
-function VatController:new(tr_fluid_arg, tr_item_arg)
+function VatController:new()
     local obj = {}
-	    obj.comp = require("component")
-		obj.red = obj.comp.redstone
-		obj.input_bus = obj.comp.inventory_controller
-		obj.fluid_out = get_gt_by_name(obj.comp, "hatch.output")
-		obj.radio_info = get_gt_by_name(obj.comp, "bw.radiohatch")
-		obj.vat = get_gt_by_name(obj.comp, "bw.biovat")
-		obj.tr_fluid = obj.comp.proxy(obj.comp.get(tr_fluid_arg))
-		obj.tr_radio = obj.comp.proxy(obj.comp.get(tr_item_arg))
-		obj.si = require("sides")
+		obj.input_bus = component.inventory_controller
+		obj.radio_info = get_gt_by_name("bw.radiohatch")
+		obj.vat = get_gt_by_name("bw.biovat")
+		obj.vat.setWorkAllowed(false)
+		obj.tr_fluid = nil
+		obj.tr_radio = nil
 		obj.out_half = 0
 		
 	function obj:calc_max_half_output()
-		local tmp = self.fluid_out.getSensorInformation()[4]:gsub(",", "")
-		tmp = tmp:gsub(string.match(tmp, "%d+"), "")
-		return tonumber(string.match(tmp, "%d+")) // 2
+		obj.out_half = obj.tr_fluid.getFluidInTank(sides.top)[1]["capacity"] // 2
+	end
+	
+	function obj:define_transposers()
+		for k,v in pairs(component.list('transposer')) do
+			local tmp = component.proxy(k)
+			if tmp.getFluidInTank(sides.top)[1] ~= nil then
+				self.tr_fluid = tmp
+			else
+				self.tr_radio = tmp
+			end
+		end
+	end
+	
+	function obj:vat_blink()
+		self.vat.setWorkAllowed(true)
+		os.sleep(0.3)
+		self.vat.setWorkAllowed(false)
 	end
 	
 	function obj:getRecipeLostTime()
@@ -39,8 +56,7 @@ function VatController:new(tr_fluid_arg, tr_item_arg)
 	end
 	
 	function obj:getResultFluidCount()
-	    local fluid = string.match(self.fluid_out.getSensorInformation()[4]:gsub(",", ""), "%d+")
-		return tonumber(fluid) - self.out_half
+		return self.tr_fluid.getFluidInTank(sides.top)[1]["amount"] - self.out_half
 	end
 	
 	function obj:getRadioTime()
@@ -57,16 +73,20 @@ function VatController:new(tr_fluid_arg, tr_item_arg)
 	end
 	
 	function obj:insertRadio()
-		obj.tr_radio.transferItem(self.si.bottom, self.si.top, 1)
+		obj.tr_radio.transferItem(sides.bottom, sides.top, 1)
 	end
 	
 	function obj:extractFluid()
 		local amount = self:getResultFluidCount()
-		self.tr_fluid.transferFluid(self.si.top, self.si.bottom, amount)
+		if amount <= 0 then
+			return
+		end
+		print("Выход жидкости: "..tostring(amount))
+		self.tr_fluid.transferFluid(sides.top, sides.bottom, amount)
 	end
 	
 	function obj:requireStart()
-		return self.input_bus.getSlotStackSize(self.si.top, 1) > 0
+		return self.input_bus.getSlotStackSize(sides.top, 1) > 0
 	end
 	
 	function obj:processing()
@@ -74,8 +94,7 @@ function VatController:new(tr_fluid_arg, tr_item_arg)
 		    if self:getRadioTime() <= 20 then
 				self:insertRadio()
 			end
-			self.red.setOutput(si.top, 15)
-			self.red.setOutput(si.top, 0)
+			self:vat_blink()
 			if self:requireInsertRadio() then
 			    self:insertRadio()
 			end
@@ -86,14 +105,16 @@ function VatController:new(tr_fluid_arg, tr_item_arg)
 		end
 	end
 
-	obj.out_half = obj:calc_max_half_output()
+	obj:define_transposers()
+	obj:calc_max_half_output()
 	setmetatable(obj, self)
     self.__index = self; return obj
 
 end
 
-
-vat_controller = VatController:new("7b1b", "7de3")
+print("Запуск работы бактериального чана")
+vat_controller = VatController:new()
+print("Поддерживаемый уровень: "..tostring(vat_controller.out_half))
 while true do
-    vat_controller:processing()
+	try(vat_controller:processing(), print)
 end
